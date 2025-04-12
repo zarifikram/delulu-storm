@@ -126,7 +126,7 @@ class ActorCriticAgent(nn.Module):
         action = self.sample(latent, greedy)
         return action.detach().cpu().squeeze(-1).numpy()
 
-    def update(self, latent, action, old_logprob, old_value, reward, termination, logger=None):
+    def update(self, latent, action, old_logprob, old_value, reward, termination, wandb_dict=None, rejection_mask = None,):
         '''
         Update policy and value model
         '''
@@ -144,8 +144,8 @@ class ActorCriticAgent(nn.Module):
             lambda_return = calc_lambda_return(reward, value, termination, self.gamma, self.lambd)
 
             # update value function with slow critic regularization
-            value_loss = self.symlog_twohot_loss(raw_value[:, :-1], lambda_return.detach())
-            slow_value_regularization_loss = self.symlog_twohot_loss(raw_value[:, :-1], slow_lambda_return.detach())
+            value_loss = self.symlog_twohot_loss(raw_value[:, :-1], lambda_return.detach(), rejection_mask=rejection_mask)
+            slow_value_regularization_loss = self.symlog_twohot_loss(raw_value[:, :-1], slow_lambda_return.detach(), rejection_mask=rejection_mask)
 
             lower_bound = self.lowerbound_ema(percentile(lambda_return, 0.05))
             upper_bound = self.upperbound_ema(percentile(lambda_return, 0.95))
@@ -168,10 +168,13 @@ class ActorCriticAgent(nn.Module):
 
         self.update_slow_critic()
 
-        if logger is not None:
-            logger.log('ActorCritic/policy_loss', policy_loss.item())
-            logger.log('ActorCritic/value_loss', value_loss.item())
-            logger.log('ActorCritic/entropy_loss', entropy_loss.item())
-            logger.log('ActorCritic/S', S.item())
-            logger.log('ActorCritic/norm_ratio', norm_ratio.item())
-            logger.log('ActorCritic/total_loss', loss.item())
+        if wandb_dict is not None:
+            _mets = {
+                'ActorCritic/policy_loss': policy_loss.item(),
+                'ActorCritic/value_loss': value_loss.item(),
+                'ActorCritic/entropy_loss': entropy_loss.item(),
+                'ActorCritic/S': S.item(),
+                'ActorCritic/norm_ratio': norm_ratio.item(),
+                'ActorCritic/total_loss': loss.item(),
+            }
+            wandb_dict.update(_mets)

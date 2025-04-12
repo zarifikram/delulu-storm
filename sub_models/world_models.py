@@ -6,10 +6,11 @@ from einops import rearrange, repeat, reduce
 from einops.layers.torch import Rearrange
 from torch.cuda.amp import autocast
 
-from sub_models.functions_losses import SymLogTwoHotLoss
+from sub_models.functions_losses import SymLogTwoHotLoss, TemporalConsistancyLoss
 from sub_models.attention_blocks import get_subsequent_mask_with_batch_length, get_subsequent_mask
 from sub_models.transformer_model import StochasticTransformerKVCache
 import agents
+import wandb
 
 
 class EncoderBN(nn.Module):
@@ -215,7 +216,7 @@ class CategoricalKLDivLossWithFreeBits(nn.Module):
 
 class WorldModel(nn.Module):
     def __init__(self, in_channels, action_dim,
-                 transformer_max_length, transformer_hidden_dim, transformer_num_layers, transformer_num_heads):
+                 transformer_max_length, transformer_hidden_dim, transformer_num_layers, transformer_num_heads, conf):
         super().__init__()
         self.transformer_hidden_dim = transformer_hidden_dim
         self.final_feature_width = 4
@@ -225,6 +226,10 @@ class WorldModel(nn.Module):
         self.tensor_dtype = torch.bfloat16 if self.use_amp else torch.float32
         self.imagine_batch_size = -1
         self.imagine_batch_length = -1
+        self._use_tcl_loss = conf.tcl.use_tcl_loss
+        self._delulu_block = conf.tcl.use_tcl_loss and conf.tcl.value_adjust
+        if self._use_tcl_loss:
+            self.tcl = TemporalConsistancyLoss(conf.tcl.tcl_config)
 
         self.encoder = EncoderBN(
             in_channels=in_channels,
@@ -339,7 +344,7 @@ class WorldModel(nn.Module):
             self.termination_hat_buffer = torch.zeros(scalar_size, dtype=dtype, device="cuda")
 
     def imagine_data(self, agent: agents.ActorCriticAgent, sample_obs, sample_action,
-                     imagine_batch_size, imagine_batch_length, log_video, logger):
+                     imagine_batch_size, imagine_batch_length, log_video, wandb_dict):
         self.init_imagine_buffer(imagine_batch_size, imagine_batch_length, dtype=self.tensor_dtype)
         obs_hat_list = []
 
@@ -371,11 +376,12 @@ class WorldModel(nn.Module):
                 obs_hat_list.append(last_obs_hat[::imagine_batch_size//16])  # uniform sample vec_env
 
         if log_video:
-            logger.log("Imagine/predict_video", torch.clamp(torch.cat(obs_hat_list, dim=1), 0, 1).cpu().float().detach().numpy())
+            frames = (torch.clamp(torch.cat(obs_hat_list, dim=1), 0, 1) * 255).cpu().int().detach().numpy()
+            wandb.log({"Imagine/predict_video": wandb.Video(frames, fps=4)})
 
         return torch.cat([self.latent_buffer, self.hidden_buffer], dim=-1), self.action_buffer, self.reward_hat_buffer, self.termination_hat_buffer
 
-    def update(self, obs, action, reward, termination, logger=None):
+    def update(self, obs, action, reward, termination, wandb_dict=None):
         self.train()
         batch_size, batch_length = obs.shape[:2]
 
@@ -405,6 +411,14 @@ class WorldModel(nn.Module):
             dynamics_loss, dynamics_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:].detach(), prior_logits[:, :-1])
             representation_loss, representation_real_kl_div = self.categorical_kl_div_loss(post_logits[:, 1:], prior_logits[:, :-1].detach())
             total_loss = reconstruction_loss + reward_loss + termination_loss + 0.5*dynamics_loss + 0.1*representation_loss
+            
+            if self._use_tcl_loss:
+                # tcl_loss = self.tcl.calculate_loss(post_logits.reshape(*post_logits.shape[:2], -1))
+                tcl_loss = self.tcl.calculate_loss(dist_feat)
+                total_loss += tcl_loss
+                wandb_dict["WorldModel/tcl_loss"] = tcl_loss.item()
+                wandb_dict["tcl/mu"] = self.tcl.mu.item()
+                wandb_dict["tcl/std"] = self.tcl.std.item()
 
         # gradient descent
         self.scaler.scale(total_loss).backward()
@@ -414,12 +428,40 @@ class WorldModel(nn.Module):
         self.scaler.update()
         self.optimizer.zero_grad(set_to_none=True)
 
-        if logger is not None:
-            logger.log("WorldModel/reconstruction_loss", reconstruction_loss.item())
-            logger.log("WorldModel/reward_loss", reward_loss.item())
-            logger.log("WorldModel/termination_loss", termination_loss.item())
-            logger.log("WorldModel/dynamics_loss", dynamics_loss.item())
-            logger.log("WorldModel/dynamics_real_kl_div", dynamics_real_kl_div.item())
-            logger.log("WorldModel/representation_loss", representation_loss.item())
-            logger.log("WorldModel/representation_real_kl_div", representation_real_kl_div.item())
-            logger.log("WorldModel/total_loss", total_loss.item())
+        if wandb_dict is not None:
+            _mets = {
+                "WorldModel/reconstruction_loss": reconstruction_loss.item(),
+                "WorldModel/reward_loss": reward_loss.item(),
+                "WorldModel/termination_loss": termination_loss.item(),
+                "WorldModel/dynamics_loss": dynamics_loss.item(),
+                "WorldModel/dynamics_real_kl_div": dynamics_real_kl_div.item(),
+                "WorldModel/representation_loss": representation_loss.item(),
+                "WorldModel/representation_real_kl_div": representation_real_kl_div.item(),
+                "WorldModel/total_loss": total_loss.item(),
+            }
+            wandb_dict.update(_mets)
+
+    def _get_rejection_mask_and_imagined_distance_from_evaluator(self, imag_feat):
+        """Calculates a rejection mask based on evaluator's output.
+
+        This method reshapes the input features, computes a rejection mask using the evaluator,
+        and then reshapes the mask back to its original form.
+
+        Args:
+            imag_feat: Imagined features.
+
+        Returns:
+            Rejection mask, which is a binary mask indicating whether the imagined features are rejected or not.
+            Distance to imagined, which is the distance between the imagined features and the nearest point in the evaluator's output.
+        """
+        imag_t, imag_t_plus_1 = imag_feat[:, :-1], imag_feat[:, 1:]
+        B, T, _ = imag_t.shape
+        imag_t, imag_t_plus_1 = imag_t.reshape(B*T, -1), imag_t_plus_1.reshape(
+            B*T, -1
+        )
+        rejection_mask, dist_distance2imagined = self.tcl.calculate_rejection_mask_and_distance_from_generated_outputs(
+                imag_t, imag_t_plus_1
+        ) 
+        
+        rejection_mask = rejection_mask.reshape(B, T, -1)
+        return rejection_mask, dist_distance2imagined

@@ -3,7 +3,15 @@ Task: "JointTrainAgent"
 BasicSettings:
   Seed: 0
   ImageSize: 64
+  n: PlaceHolder
   ReplayBufferOnGPU: True
+  env_name: "ALE/Boxing-v5"
+  device: "cuda:2"
+
+wandb:
+  project_name: "GIT-STORM"
+  log: True
+  exp_name: "Frostbite_optimized"
 
 JointTrainAgent:
   SampleMaxSteps: 102000
@@ -36,3 +44,16 @@ Models:
     Gamma: 0.985
     Lambda: 0.95
     EntropyCoef: 3E-4
+
+tcl:
+  use_tcl_loss: True
+  tcl_config: {
+      "latent_dim": 512,
+      "loss_type": "predictive", # or contrastive
+      "temperature": 0.1,
+      "k": 32,
+      "tau": 0.05,
+      "delta": 0.5,
+    }
+  value_scale: False
+  value_adjust: True
