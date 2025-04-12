@@ -9,4 +9,5 @@ colorama
 einops
 tqdm
 opencv-python
-gymnasium[atari,accept-rom-license]
+gymnasium[atari,accept-rom-license]hydra-core
+wandb
