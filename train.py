@@ -183,7 +183,7 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
         if done_flag.any():
             for i in range(num_envs):
                 if done_flag[i]:
-                    wandb_dict.update({f"sample/{env_name}_reward": sum_reward[i]})
+                    wandb_dict.update({f"train_return": sum_reward[i]})
                     wandb_dict.update({f"sample/{env_name}_episode_steps": current_info["episode_frame_number"][i]//4})
                     wandb_dict.update({"replay_buffer/length": len(replay_buffer)})
                     sum_reward[i] = 0
@@ -265,7 +265,7 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
                 step_num=total_steps*num_envs,
                 seed = seed,
             )
-            wandb_dict.update({f"eval/{env_name}_episode_avg_return": episode_avg_return})
+            wandb_dict.update({f"eval_return": episode_avg_return})
         wandb.log(wandb_dict)
 
 
