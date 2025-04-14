@@ -43,17 +43,19 @@ Models:
     HiddenDim: 512
     Gamma: 0.985
     Lambda: 0.95
-    EntropyCoef: 3E-4
+    EntropyCoef: 3E-4 # 3E-4
 
 tcl:
   use_tcl_loss: True
   tcl_config: {
-      "latent_dim": 512,
+      "latent_dim": 1024,
+      "stoch_dim": 32,
       "loss_type": "predictive", # or contrastive
       "temperature": 0.1,
       "k": 32,
       "tau": 0.05,
       "delta": 0.5,
+      "loss_fn": "ce", # "kl" or "mse"
     }
   value_scale: False
   value_adjust: True

@@ -414,7 +414,8 @@ class WorldModel(nn.Module):
             
             if self._use_tcl_loss:
                 # tcl_loss = self.tcl.calculate_loss(post_logits.reshape(*post_logits.shape[:2], -1))
-                tcl_loss = self.tcl.calculate_loss(dist_feat)
+                tcl_loss = self.tcl.calculate_loss(flattened_sample)
+                # tcl_loss = self.tcl.calculate_loss(dist_feat)
                 total_loss += tcl_loss
                 wandb_dict["WorldModel/tcl_loss"] = tcl_loss.item()
                 wandb_dict["tcl/mu"] = self.tcl.mu.item()

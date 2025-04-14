@@ -87,8 +87,6 @@ def eval_episodes(num_episode, env_name, max_steps, num_envs, image_size,
         context_action.append(action)
 
         obs, reward, done, truncated, info = vec_env.step(action)
-        # cv2.imshow("current_obs", process_visualize(obs[0]))
-        # cv2.waitKey(10)
 
         done_flag = np.logical_or(done, truncated)
         if done_flag.any():
@@ -257,7 +255,7 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
             episode_avg_return = eval_episodes(
                 num_episode=30,
                 env_name=env_name,
-                num_envs=num_envs,
+                num_envs=6,
                 max_steps=max_steps,
                 image_size=image_size,
                 world_model=world_model,
